@@ -30,10 +30,11 @@ import (
 
 func main() {
 	opt := &Options{
-		Listen:     "localhost:9002",
-		LimitBytes: 200 * 1024,
-		Rules:      []string{`{__name__="up"}`},
-		Interval:   4*time.Minute + 30*time.Second,
+		Listen:         "localhost:9002",
+		LimitBytes:     200 * 1024,
+		Rules:          []string{`{__name__="up"}`},
+		RecordingRules: []string{`{"name":"apiserver_request_duration_seconds:histogram_quantile_99","query":"histogram_quantile(0.99,sum(rate(apiserver_request_duration_seconds_bucket{job=\"apiserver\", verb!=\"WATCH\"}[5m])) by (verb,le))"}`},
+		Interval:       4*time.Minute + 30*time.Second,
 	}
 	cmd := &cobra.Command{
 		Short:         "Federate Prometheus via push",
@@ -55,6 +56,7 @@ func main() {
 
 	// TODO: more complex input definition, such as a JSON struct
 	cmd.Flags().StringArrayVar(&opt.Rules, "match", opt.Rules, "Match rules to federate.")
+	cmd.Flags().StringArrayVar(&opt.RecordingRules, "recordingrule", opt.RecordingRules, "A file containing match rules to federate, one rule per line.")
 	cmd.Flags().StringVar(&opt.RulesFile, "match-file", opt.RulesFile, "A file containing match rules to federate, one rule per line.")
 
 	cmd.Flags().StringSliceVar(&opt.LabelFlag, "label", opt.LabelFlag, "Labels to add to each outgoing metric, in key=value form.")
@@ -107,8 +109,9 @@ type Options struct {
 	AnonymizeSalt     string
 	AnonymizeSaltFile string
 
-	Rules     []string
-	RulesFile string
+	Rules          []string
+	RecordingRules []string
+	RulesFile      string
 
 	LabelFlag []string
 	Labels    map[string]string
@@ -211,6 +214,7 @@ func (o *Options) Run() error {
 		Interval:          o.Interval,
 		LimitBytes:        o.LimitBytes,
 		Rules:             o.Rules,
+		RecordingRules:    o.RecordingRules,
 		RulesFile:         o.RulesFile,
 		Transformer:       transformer,
 
