@@ -72,9 +72,9 @@ type Config struct {
 	Debug             bool
 	Interval          time.Duration
 	LimitBytes        int64
-	Rules             []string
+	Matches           []string
+	MatchesFile       string
 	RecordingRules    []string
-	RulesFile         string
 	Transformer       metricfamily.Transformer
 
 	Logger log.Logger
@@ -91,7 +91,7 @@ type Worker struct {
 
 	interval       time.Duration
 	transformer    metricfamily.Transformer
-	rules          []string
+	matches        []string
 	recordingRules []string
 
 	lastMetrics []*clientmodel.MetricFamily
@@ -214,24 +214,24 @@ func New(cfg Config) (*Worker, error) {
 	w.transformer = transformer
 
 	// Configure the matching rules.
-	rules := cfg.Rules
-	if len(cfg.RulesFile) > 0 {
-		data, err := ioutil.ReadFile(cfg.RulesFile)
+	matches := cfg.Matches
+	if len(cfg.MatchesFile) > 0 {
+		data, err := ioutil.ReadFile(cfg.MatchesFile)
 		if err != nil {
 			return nil, fmt.Errorf("unable to read match-file: %v", err)
 		}
-		rules = append(rules, strings.Split(string(data), "\n")...)
+		matches = append(matches, strings.Split(string(data), "\n")...)
 	}
-	for i := 0; i < len(rules); {
-		s := strings.TrimSpace(rules[i])
+	for i := 0; i < len(matches); {
+		s := strings.TrimSpace(matches[i])
 		if len(s) == 0 {
-			rules = append(rules[:i], rules[i+1:]...)
+			matches = append(matches[:i], matches[i+1:]...)
 			continue
 		}
-		rules[i] = s
+		matches[i] = s
 		i++
 	}
-	w.rules = rules
+	w.matches = matches
 
 	// Configure the recording rules.
 	recordingRules := cfg.RecordingRules
@@ -272,7 +272,7 @@ func (w *Worker) Reconfigure(cfg Config) error {
 	w.from = worker.from
 	w.to = worker.to
 	w.transformer = worker.transformer
-	w.rules = worker.rules
+	w.matches = worker.matches
 	w.recordingRules = worker.recordingRules
 
 	// Signal a restart to Run func.
@@ -322,8 +322,8 @@ func (w *Worker) forward(ctx context.Context) error {
 	// reset query from last invocation, otherwise match rules will be appended
 	w.from.RawQuery = ""
 	v := from.Query()
-	for _, rule := range w.rules {
-		v.Add("match[]", rule)
+	for _, match := range w.matches {
+		v.Add("match[]", match)
 	}
 	from.RawQuery = v.Encode()
 

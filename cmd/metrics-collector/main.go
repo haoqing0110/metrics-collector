@@ -32,7 +32,7 @@ func main() {
 	opt := &Options{
 		Listen:         "localhost:9002",
 		LimitBytes:     200 * 1024,
-		Rules:          []string{`{__name__="up"}`},
+		Matches:        []string{`{__name__="up"}`},
 		RecordingRules: []string{`{"name":"apiserver_request_duration_seconds:histogram_quantile_99","query":"histogram_quantile(0.99,sum(rate(apiserver_request_duration_seconds_bucket{job=\"apiserver\", verb!=\"WATCH\"}[5m])) by (verb,le))"}`},
 		Interval:       4*time.Minute + 30*time.Second,
 	}
@@ -55,9 +55,9 @@ func main() {
 	cmd.Flags().Int64Var(&opt.LimitBytes, "limit-bytes", opt.LimitBytes, "The maxiumum acceptable size of a response returned when scraping Prometheus.")
 
 	// TODO: more complex input definition, such as a JSON struct
-	cmd.Flags().StringArrayVar(&opt.Rules, "match", opt.Rules, "Match rules to federate.")
-	cmd.Flags().StringArrayVar(&opt.RecordingRules, "recordingrule", opt.RecordingRules, "A file containing match rules to federate, one rule per line.")
-	cmd.Flags().StringVar(&opt.RulesFile, "match-file", opt.RulesFile, "A file containing match rules to federate, one rule per line.")
+	cmd.Flags().StringArrayVar(&opt.Matches, "match", opt.Matches, "Match rules to federate.")
+	cmd.Flags().StringVar(&opt.MatchesFile, "match-file", opt.MatchesFile, "A file containing match rules to federate, one rule per line.")
+	cmd.Flags().StringArrayVar(&opt.RecordingRules, "recordingrule", opt.RecordingRules, "Recording rules")
 
 	cmd.Flags().StringSliceVar(&opt.LabelFlag, "label", opt.LabelFlag, "Labels to add to each outgoing metric, in key=value form.")
 	cmd.Flags().StringSliceVar(&opt.RenameFlag, "rename", opt.RenameFlag, "Rename metrics before sending by specifying OLD=NEW name pairs. Defaults to renaming ALERTS to alerts. Defaults to ALERTS=alerts.")
@@ -109,9 +109,9 @@ type Options struct {
 	AnonymizeSalt     string
 	AnonymizeSaltFile string
 
-	Rules          []string
+	Matches        []string
+	MatchesFile    string
 	RecordingRules []string
-	RulesFile      string
 
 	LabelFlag []string
 	Labels    map[string]string
@@ -213,9 +213,9 @@ func (o *Options) Run() error {
 		Debug:             o.Verbose,
 		Interval:          o.Interval,
 		LimitBytes:        o.LimitBytes,
-		Rules:             o.Rules,
+		Matches:           o.Matches,
+		MatchesFile:       o.MatchesFile,
 		RecordingRules:    o.RecordingRules,
-		RulesFile:         o.RulesFile,
 		Transformer:       transformer,
 
 		Logger: o.Logger,
