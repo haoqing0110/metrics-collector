@@ -12,6 +12,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,7 @@ import (
 	rlogger "github.com/open-cluster-management/metrics-collector/pkg/logger"
 	"github.com/open-cluster-management/metrics-collector/pkg/metricfamily"
 	"github.com/open-cluster-management/metrics-collector/pkg/metricsclient"
+	"github.com/open-cluster-management/metrics-collector/pkg/simulator"
 	"github.com/open-cluster-management/metrics-collector/pkg/status"
 )
 
@@ -315,33 +317,36 @@ func (w *Worker) Run(ctx context.Context) {
 func (w *Worker) forward(ctx context.Context) error {
 	w.lock.Lock()
 	defer w.lock.Unlock()
-	fStart := time.Now()
 
-	families, err := w.getFederateMetrics(ctx)
-	if err != nil {
-		statusErr := w.status.UpdateStatus("Degraded", "Degraded", "Failed to retrieve metrics")
-		if statusErr != nil {
-			rlogger.Log(w.logger, rlogger.Warn, "msg", failedStatusReportMsg, "err", err)
-		}
-		return err
-	}
-
-	rfamilies, err := w.getRecordingMetrics(ctx)
-	if err != nil {
-		statusErr := w.status.UpdateStatus("Degraded", "Degraded", "Failed to retrieve recording metrics")
-		if statusErr != nil {
-			rlogger.Log(w.logger, rlogger.Warn, "msg", failedStatusReportMsg, "err", err)
-		}
-		return err
+	var families []*clientmodel.MetricFamily
+	if os.Getenv("SIMULATE") == "true" {
+		families = simulator.SimulateMetrics(w.logger)
 	} else {
-		families = append(families, rfamilies...)
+		families, err := w.getFederateMetrics(ctx)
+		if err != nil {
+			statusErr := w.status.UpdateStatus("Degraded", "Degraded", "Failed to retrieve metrics")
+			if statusErr != nil {
+				rlogger.Log(w.logger, rlogger.Warn, "msg", failedStatusReportMsg, "err", statusErr)
+			}
+			return err
+		}
+
+		rfamilies, err := w.getRecordingMetrics(ctx)
+		if err != nil {
+			statusErr := w.status.UpdateStatus("Degraded", "Degraded", "Failed to retrieve recording metrics")
+			if statusErr != nil {
+				rlogger.Log(w.logger, rlogger.Warn, "msg", failedStatusReportMsg, "err", statusErr)
+			}
+		} else {
+			families = append(families, rfamilies...)
+		}
 	}
 
 	before := metricfamily.MetricsCount(families)
 	if err := metricfamily.Filter(families, w.transformer); err != nil {
 		statusErr := w.status.UpdateStatus("Degraded", "Degraded", "Failed to filter metrics")
 		if statusErr != nil {
-			rlogger.Log(w.logger, rlogger.Warn, "msg", failedStatusReportMsg, "err", err)
+			rlogger.Log(w.logger, rlogger.Warn, "msg", failedStatusReportMsg, "err", statusErr)
 		}
 		return err
 	}
@@ -358,7 +363,7 @@ func (w *Worker) forward(ctx context.Context) error {
 		rlogger.Log(w.logger, rlogger.Warn, "msg", "no metrics to send, doing nothing")
 		statusErr := w.status.UpdateStatus("Available", "Available", "No metrics to send")
 		if statusErr != nil {
-			rlogger.Log(w.logger, rlogger.Warn, "msg", failedStatusReportMsg, "err", err)
+			rlogger.Log(w.logger, rlogger.Warn, "msg", failedStatusReportMsg, "err", statusErr)
 		}
 		return nil
 	}
@@ -367,36 +372,35 @@ func (w *Worker) forward(ctx context.Context) error {
 		rlogger.Log(w.logger, rlogger.Warn, "msg", "to is nil, doing nothing")
 		statusErr := w.status.UpdateStatus("Available", "Available", "Metrics is not required to send")
 		if statusErr != nil {
-			rlogger.Log(w.logger, rlogger.Warn, "msg", failedStatusReportMsg, "err", err)
+			rlogger.Log(w.logger, rlogger.Warn, "msg", failedStatusReportMsg, "err", statusErr)
 		}
 		return nil
 	}
 
 	req := &http.Request{Method: "POST", URL: w.to}
-	err = w.toClient.RemoteWrite(ctx, req, families, w.interval)
+	err := w.toClient.RemoteWrite(ctx, req, families, w.interval)
 	if err != nil {
 		statusErr := w.status.UpdateStatus("Degraded", "Degraded", "Failed to send metrics")
 		if statusErr != nil {
-			rlogger.Log(w.logger, rlogger.Warn, "msg", failedStatusReportMsg, "err", err)
+			rlogger.Log(w.logger, rlogger.Warn, "msg", failedStatusReportMsg, "err", statusErr)
 		}
 	} else {
 		statusErr := w.status.UpdateStatus("Available", "Available", "Send metrics successfully")
 		if statusErr != nil {
-			rlogger.Log(w.logger, rlogger.Warn, "msg", failedStatusReportMsg, "err", err)
+			rlogger.Log(w.logger, rlogger.Warn, "msg", failedStatusReportMsg, "err", statusErr)
 		}
 	}
 
-	elapsed := time.Since(fStart)
-	rlogger.Log(w.logger, rlogger.Info, "forward_total_time", elapsed)
 	return err
 }
 
 func (w *Worker) getFederateMetrics(ctx context.Context) ([]*clientmodel.MetricFamily, error) {
-	start := time.Now()
-	from := w.from
+	var families []*clientmodel.MetricFamily
+	var err error
 
 	// reset query from last invocation, otherwise match rules will be appended
-	w.from.RawQuery = ""
+	from := w.from
+	from.RawQuery = ""
 	v := from.Query()
 	for _, rule := range w.rules {
 		v.Add("match[]", rule)
@@ -404,23 +408,23 @@ func (w *Worker) getFederateMetrics(ctx context.Context) ([]*clientmodel.MetricF
 	from.RawQuery = v.Encode()
 
 	req := &http.Request{Method: "GET", URL: from}
-	families, err := w.fromClient.Retrieve(ctx, req)
+	families, err = w.fromClient.Retrieve(ctx, req)
 	if err != nil {
-		return nil, err
+		rlogger.Log(w.logger, rlogger.Warn, "msg", "Failed to retrieve metrics", "err", err)
+		return families, err
 	}
 
-	elapsed := time.Since(start)
-	rlogger.Log(w.logger, rlogger.Info, "federate_time", elapsed)
 	return families, nil
 }
 
 func (w *Worker) getRecordingMetrics(ctx context.Context) ([]*clientmodel.MetricFamily, error) {
-	families := []*clientmodel.MetricFamily{}
-	start := time.Now()
-	from := w.from
+	var families []*clientmodel.MetricFamily
+	var e error
 
+	from := w.from
 	originPath := from.Path
 	from.Path = "/api/v1/query"
+	// Path /api/v1/query is only used in getRecordingMetrics(), reset to origin path before return.
 	defer func() {
 		w.from.Path = originPath
 	}()
@@ -430,6 +434,7 @@ func (w *Worker) getRecordingMetrics(ctx context.Context) ([]*clientmodel.Metric
 		err := json.Unmarshal(([]byte)(rule), &r)
 		if err != nil {
 			rlogger.Log(w.logger, rlogger.Warn, "msg", "Input error", "err", err)
+			e = err
 			continue
 		}
 		rname := r["name"]
@@ -444,13 +449,13 @@ func (w *Worker) getRecordingMetrics(ctx context.Context) ([]*clientmodel.Metric
 		req := &http.Request{Method: "GET", URL: from}
 		rfamilies, err := w.fromClient.RetrievRecordingMetrics(ctx, req, rname)
 		if err != nil {
-			return families, err
+			rlogger.Log(w.logger, rlogger.Warn, "msg", "Failed to retrieve recording metrics", "err", err)
+			e = err
+			continue
 		} else {
 			families = append(families, rfamilies...)
 		}
 	}
 
-	elapsed := time.Since(start)
-	rlogger.Log(w.logger, rlogger.Info, "recording_query_time", elapsed)
-	return families, nil
+	return families, e
 }
